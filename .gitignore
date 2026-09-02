@@ -118,5 +118,9 @@ prime/
 # Ignore worktrees when working on multiple branches
 .worktrees/
 
+# The static git built by "make nibrun-git"
+/cmd/nibrun_assets/git.gz
+/gitea-nibrun-linux-amd64
+
 # A Makefile for custom make targets
 Makefile.local

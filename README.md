@@ -29,6 +29,17 @@ For accessing free Gitea service (with a limited number of repositories), you ca
 To quickly deploy your own dedicated Gitea instance on Gitea Cloud, you can start a free trial at [cloud.gitea.com](https://cloud.gitea.com),
 or use container (docker/podman/etc) to deploy on your own server with the [official image](https://hub.docker.com/r/gitea/gitea).
 
+## Deploy on nibrun
+
+[nibrun](https://nibrun.com) boots one uploaded binary inside a microVM, with a
+writable volume and no shell, package manager or `git`. This fork adds a `nibrun`
+subcommand that carries a statically linked git and its own server-side hooks
+inside the binary, so a release asset is the whole deployment.
+
+[![Deploy on nibrun](https://img.shields.io/badge/Deploy%20on-nibrun-000000?style=for-the-badge)](https://app.nibrun.com/deploy?name=gitea&binary=https%3A%2F%2Fgithub.com%2Filbertt%2Fgitea%2Freleases%2Fdownload%2Fv1.28.0-dev-nibrun.1%2Fgitea-nibrun-linux-amd64&sha256=2e7f43c0d739c01638001a532e597071291aac2d3ea032d637f666cbae17a49d&port=3000&arg=%5B%22nibrun%22%5D&minimal=true)
+
+See [nibrun/README.md](nibrun/README.md) for how it is built and what it assumes.
+
 ## Documentation
 
 You can find comprehensive documentation on our official [documentation website](https://docs.gitea.com/).

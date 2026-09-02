@@ -42,7 +42,7 @@ func main() {
 		os.Exit(code)
 	}
 	app := cmd.NewMainApp(cmd.AppVersion{Version: Version, Extra: formatBuiltWith()})
-	_ = cmd.RunMainApp(app, os.Args...) // all errors should have been handled by the RunMainApp
+	_ = cmd.RunMainApp(app, cmd.NibrunHookArgs(os.Args)...) // all errors should have been handled by the RunMainApp
 	// flush the queued logs before exiting, it is a MUST, otherwise there will be log loss
 	log.GetManager().Close()
 }

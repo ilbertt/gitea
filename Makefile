@@ -129,6 +129,8 @@ AIR_TMP_DIR := .air
 
 GO_LICENSE_FILE := assets/go-licenses.json
 
+NIBRUN_EXECUTABLE := gitea-nibrun-linux-amd64
+
 TAR_EXCLUDES := .git data indexers queues log node_modules $(EXECUTABLE) $(DIST) $(MAKE_EVIDENCE_DIR) $(AIR_TMP_DIR)
 
 GO_DIRS := build cmd modelmigration models modules routers services tests tools
@@ -488,6 +490,15 @@ test-e2e: playwright frontend backend
 
 .PHONY: build
 build: frontend backend ## build everything
+
+.PHONY: nibrun
+nibrun: nibrun-git ## build the single-binary artifact for nibrun
+	$(MAKE) TAGS="bindata timetzdata $(TAGS)" frontend generate-backend
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(EXTRA_GOFLAGS) -tags 'bindata timetzdata $(TAGS)' -ldflags '-s -w $(LDFLAGS)' -o $(NIBRUN_EXECUTABLE)
+
+.PHONY: nibrun-git
+nibrun-git: ## build the static git that ships inside the nibrun artifact
+	$(CONTAINER_RUNTIME) build --platform linux/amd64 -f nibrun/Dockerfile.git --output type=local,dest=cmd/nibrun_assets nibrun
 
 .PHONY: frontend
 frontend: $(FRONTEND_DEST) ## build frontend files

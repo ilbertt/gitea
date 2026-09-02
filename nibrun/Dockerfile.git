@@ -1,0 +1,32 @@
+# Builds the statically linked git that ships inside the nibrun artifact. The
+# guest root filesystem carries a libc and nothing else, so this git has to run
+# with no shared libraries and no helper programs beside it.
+FROM --platform=linux/amd64 alpine:3.21 AS build
+
+# git 2.52 and newer need a Rust toolchain to build libgitcore, which buys
+# nothing for a server that only serves upload-pack and receive-pack.
+ARG GIT_VERSION=2.51.2
+
+RUN apk add --no-cache build-base zlib-dev zlib-static curl perl linux-headers
+
+WORKDIR /build
+RUN curl -sSL -O https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz \
+ && tar xzf git-${GIT_VERSION}.tar.gz \
+ && mv git-${GIT_VERSION} git
+
+WORKDIR /build/git
+
+# NO_REGEX is required because musl has no REG_STARTEND. upload-pack and
+# receive-pack are builtins, so SKIP_DASHED_BUILT_INS still leaves a complete
+# server side in the single resulting binary.
+RUN make -j"$(nproc)" \
+      NO_CURL=1 NO_PERL=1 NO_PYTHON=1 NO_TCLTK=1 NO_GETTEXT=1 \
+      NO_OPENSSL=1 NO_EXPAT=1 NO_ICONV=1 NO_REGEX=NeedsStartEnd \
+      SKIP_DASHED_BUILT_INS=YesPlease \
+      CFLAGS="-O2 -static" LDFLAGS="-static" \
+      git \
+ && strip git \
+ && gzip -9 git
+
+FROM scratch AS export
+COPY --from=build /build/git/git.gz /git.gz
