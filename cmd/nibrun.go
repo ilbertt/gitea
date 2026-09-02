@@ -21,9 +21,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// The static git built by `make nibrun-git`. It is a build artifact and is not
-// committed, so a plain `go build` reports the missing asset at run time instead
-// of failing to compile.
+// Embeds the directory, not git.gz itself, so a tree without the build artifact
+// still compiles and reports the missing asset at run time.
 //
 //go:embed nibrun_assets
 var nibrunAssets embed.FS
@@ -33,10 +32,8 @@ var nibrunHooks = []string{"pre-receive", "update", "post-receive", "proc-receiv
 
 const nibrunAdminUser = "gitea-admin"
 
-// newNibrunCommand serves exactly as "web" does, after laying out the single
-// writable directory the host gives it. Preparing in Before rather than in the
-// action is what lets it run in this process: the work path is resolved from the
-// environment between the two.
+// Preparing in Before rather than in the action is what keeps this to one
+// process: the work path is resolved from the exported environment between them.
 func newNibrunCommand() *cli.Command {
 	command := newWebCommand()
 	command.Name = "nibrun"
@@ -88,8 +85,7 @@ func prepareNibrun() error {
 		"PATH": path("bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME": path("home"),
 
-		// The bundled git is built with the Makefile's default prefix of $HOME, so its
-		// compiled-in system paths point at a directory the run user cannot read.
+		// git's compiled-in system paths point at the build user's home.
 		"GIT_ATTR_NOSYSTEM": "1",
 
 		// Read back by the hooks, which re-enter this binary with only a hook name.
@@ -140,8 +136,8 @@ func installNibrunHooks(dir string) error {
 	return nil
 }
 
-// Every path is absolute because the working directory is the read-only image
-// holding the binary, which is where Gitea would otherwise put all of these.
+// Absolute because Gitea would otherwise place all of these beside the binary,
+// in the read-only image it was unpacked from.
 const nibrunConfigTemplate = `APP_NAME = Gitea
 RUN_MODE = prod
 WORK_PATH = $DATA/gitea
@@ -196,8 +192,8 @@ func writeNibrunConfig(configPath, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	// nibrun terminates TLS at its edge and forwards plain HTTP, so the public URL
-	// uses a scheme the server itself never speaks.
+	// nibrun terminates TLS at its edge, so the public URL uses a scheme the server
+	// itself never speaks.
 	rootURL := "http://localhost:" + nibrunPort() + "/"
 	if os.Getenv("NIBRUN_HOSTNAME") != "" {
 		rootURL = "https://" + nibrunHostname() + "/"
@@ -227,9 +223,8 @@ func nibrunPort() string {
 	return "3000"
 }
 
-// The first user has to come from the command line: the install page is locked
-// and self-registration is disabled. Both steps run as child processes so that
-// serving starts from a single clean initialization.
+// The install page is locked and registration disabled, so the first user has to
+// come from the command line.
 func ensureNibrunAdmin(marker, configPath string) error {
 	if _, err := os.Stat(marker); err == nil {
 		return nil
@@ -243,8 +238,7 @@ func ensureNibrunAdmin(marker, configPath string) error {
 		command.Stdout, command.Stderr = os.Stdout, os.Stderr
 		return command.Run()
 	}
-	// "admin user create" opens the database without migrating it, so on a first
-	// boot the tables it writes to do not exist yet.
+	// "admin user create" opens the database without migrating it.
 	if err := run("migrate"); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
@@ -258,8 +252,8 @@ func ensureNibrunAdmin(marker, configPath string) error {
 	return os.WriteFile(marker, nil, 0o644)
 }
 
-// NibrunHookArgs rewrites the arguments of a binary invoked through one of the
-// hook symlinks into the equivalent "gitea hook <name>" invocation.
+// NibrunHookArgs turns an invocation arriving through a hook symlink into the
+// matching "gitea hook <name>" command.
 func NibrunHookArgs(args []string) []string {
 	if len(args) == 0 {
 		return args

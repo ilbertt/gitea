@@ -498,7 +498,7 @@ nibrun: nibrun-git ## build the single-binary artifact for nibrun
 
 .PHONY: nibrun-git
 nibrun-git: ## build the static git that ships inside the nibrun artifact
-	$(CONTAINER_RUNTIME) build --platform linux/amd64 -f nibrun/Dockerfile.git --output type=local,dest=cmd/nibrun_assets nibrun
+	$(CONTAINER_RUNTIME) build --platform linux/amd64 -f build/Dockerfile.git --output type=local,dest=cmd/nibrun_assets build
 
 .PHONY: frontend
 frontend: $(FRONTEND_DEST) ## build frontend files
