@@ -6,14 +6,15 @@ package cmd
 import (
 	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"gitea.dev/modules/generate"
 
@@ -21,264 +22,240 @@ import (
 )
 
 // The static git built by `make nibrun-git`. It is a build artifact and is not
-// committed, so a plain `go build` produces a binary that reports the missing
-// asset instead of failing to compile.
+// committed, so a plain `go build` reports the missing asset at run time instead
+// of failing to compile.
 //
 //go:embed nibrun_assets
 var nibrunAssets embed.FS
 
-const nibrunGitAsset = "nibrun_assets/git.gz"
-
-// nibrunHooks are the server-side hooks Gitea delegates to itself. They are the
-// subcommand names of "gitea hook", which is what the argv[0] dispatch relies on.
+// The subcommand names of "gitea hook", which the argv[0] dispatch relies on.
 var nibrunHooks = []string{"pre-receive", "update", "post-receive", "proc-receive"}
 
+const nibrunAdminUser = "gitea-admin"
+
+// newNibrunCommand serves exactly as "web" does, after laying out the single
+// writable directory the host gives it. Preparing in Before rather than in the
+// action is what lets it run in this process: the work path is resolved from the
+// environment between the two.
 func newNibrunCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "nibrun",
-		Usage: "Prepare the data volume and start the web server on nibrun",
-		Description: "nibrun boots a single uploaded binary inside a microVM whose root " +
-			"filesystem is read-only and carries no git and no shell. This command supplies " +
-			"both from inside the binary, writes a configuration addressing the one writable " +
-			"directory it is given, and then serves.",
-		Action: runNibrun,
-	}
-}
+	command := newWebCommand()
+	command.Name = "nibrun"
+	command.Usage = "Prepare the data volume and start the web server on nibrun"
+	command.Description = "nibrun boots one uploaded binary inside a microVM whose root " +
+		"filesystem is read-only and carries no git and no shell. This command supplies both " +
+		"from inside the binary before serving."
 
-func runNibrun(_ context.Context, _ *cli.Command) error {
-	layout := newNibrunLayout(nibrunDataDir())
-
-	for _, step := range []struct {
-		name string
-		run  func() error
-	}{
-		{"create directories", layout.create},
-		{"install git", layout.installGit},
-		{"install hooks", layout.installHooks},
-		{"write configuration", layout.writeConfig},
-		{"export environment", layout.exportEnvironment},
-		{"ensure administrator", layout.ensureAdmin},
-	} {
-		if err := step.run(); err != nil {
-			return fmt.Errorf("%s: %w", step.name, err)
+	before := command.Before
+	command.Before = func(ctx context.Context, c *cli.Command) (context.Context, error) {
+		ctx, err := before(ctx, c)
+		if err != nil {
+			return ctx, err
 		}
+		return ctx, prepareNibrun()
 	}
+	return command
+}
 
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
+func prepareNibrun() error {
+	dataDir := "data"
+	if dir := os.Getenv("NIBRUN_DATA_DIR"); dir != "" {
+		dataDir = dir
 	}
-	return nibrunServe(executable, layout.configPath())
-}
+	path := func(parts ...string) string {
+		return filepath.Join(append([]string{dataDir}, parts...)...)
+	}
+	workDir, customDir := path("gitea"), path("gitea", "custom")
+	configPath := filepath.Join(customDir, "conf", "app.ini")
 
-type nibrunLayout struct{ dataDir string }
-
-func newNibrunLayout(dataDir string) *nibrunLayout { return &nibrunLayout{dataDir: dataDir} }
-
-func (l *nibrunLayout) binDir() string      { return filepath.Join(l.dataDir, "bin") }
-func (l *nibrunLayout) hooksDir() string    { return filepath.Join(l.dataDir, "hooks") }
-func (l *nibrunLayout) workDir() string     { return filepath.Join(l.dataDir, "gitea") }
-func (l *nibrunLayout) customDir() string   { return filepath.Join(l.workDir(), "custom") }
-func (l *nibrunLayout) appDataPath() string { return filepath.Join(l.workDir(), "data") }
-func (l *nibrunLayout) logDir() string      { return filepath.Join(l.workDir(), "log") }
-func (l *nibrunLayout) gitHome() string     { return filepath.Join(l.dataDir, "home") }
-func (l *nibrunLayout) gitPath() string     { return filepath.Join(l.binDir(), "git") }
-
-func (l *nibrunLayout) repositories() string { return filepath.Join(l.dataDir, "repositories") }
-
-func (l *nibrunLayout) configPath() string {
-	return filepath.Join(l.customDir(), "conf", "app.ini")
-}
-
-func (l *nibrunLayout) adminMarker() string {
-	return filepath.Join(l.dataDir, ".admin-created")
-}
-
-func (l *nibrunLayout) create() error {
 	for _, dir := range []string{
-		l.binDir(),
-		l.hooksDir(),
-		filepath.Join(l.customDir(), "conf"),
-		l.appDataPath(),
-		l.logDir(),
-		l.gitHome(),
-		l.repositories(),
+		path("bin"), path("hooks"), path("home"), path("repositories"),
+		filepath.Join(customDir, "conf"), filepath.Join(workDir, "data"), filepath.Join(workDir, "log"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create %q: %w", dir, err)
 		}
 	}
-	return nil
+	if err := installNibrunGit(path("bin", "git")); err != nil {
+		return fmt.Errorf("install git: %w", err)
+	}
+	if err := installNibrunHooks(path("hooks")); err != nil {
+		return fmt.Errorf("install hooks: %w", err)
+	}
+	if err := writeNibrunConfig(configPath, dataDir); err != nil {
+		return fmt.Errorf("write configuration: %w", err)
+	}
+	for name, value := range map[string]string{
+		"PATH": path("bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME": path("home"),
+
+		// The bundled git is built with the Makefile's default prefix of $HOME, so its
+		// compiled-in system paths point at a directory the run user cannot read.
+		"GIT_ATTR_NOSYSTEM": "1",
+
+		// Read back by the hooks, which re-enter this binary with only a hook name.
+		"GITEA_WORK_DIR": workDir,
+		"GITEA_CUSTOM":   customDir,
+	} {
+		if err := os.Setenv(name, value); err != nil {
+			return fmt.Errorf("set %q: %w", name, err)
+		}
+	}
+	return ensureNibrunAdmin(path(".admin-created"), configPath)
 }
 
-func (l *nibrunLayout) installGit() error {
-	compressed, err := nibrunAssets.Open(nibrunGitAsset)
+func installNibrunGit(path string) error {
+	compressed, err := nibrunAssets.Open("nibrun_assets/git.gz")
 	if err != nil {
-		return fmt.Errorf("%s is missing, build it with `make nibrun-git`", nibrunGitAsset)
+		return errors.New("git.gz is missing, build it with `make nibrun-git`")
 	}
 	defer func() { _ = compressed.Close() }()
 
 	reader, err := gzip.NewReader(compressed)
 	if err != nil {
-		return fmt.Errorf("read asset: %w", err)
+		return err
 	}
-	defer func() { _ = reader.Close() }()
-
-	return writeNibrunExecutable(l.gitPath(), reader)
+	binary, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, binary, 0o755)
 }
 
-func (l *nibrunLayout) installHooks() error {
-	executable, err := os.Executable()
+// Gitea writes its delegate hooks as "#!/usr/bin/env bash" scripts, which the
+// guest cannot execute. core.hooksPath sends git to these symlinks instead.
+func installNibrunHooks(dir string) error {
+	self, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
+		return err
 	}
 	for _, hook := range nibrunHooks {
-		path := filepath.Join(l.hooksDir(), hook)
+		path := filepath.Join(dir, hook)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("replace %q: %w", hook, err)
+			return err
 		}
-		if err := os.Symlink(executable, path); err != nil {
+		if err := os.Symlink(self, path); err != nil {
 			return fmt.Errorf("link %q: %w", hook, err)
 		}
 	}
 	return nil
 }
 
-func (l *nibrunLayout) writeConfig() error {
-	if _, err := os.Stat(l.configPath()); err == nil {
+// Every path is absolute because the working directory is the read-only image
+// holding the binary, which is where Gitea would otherwise put all of these.
+const nibrunConfigTemplate = `APP_NAME = Gitea
+RUN_MODE = prod
+WORK_PATH = $DATA/gitea
+
+[server]
+PROTOCOL = http
+DOMAIN = $DOMAIN
+ROOT_URL = $ROOT_URL
+HTTP_ADDR = 0.0.0.0
+HTTP_PORT = $PORT
+APP_DATA_PATH = $DATA/gitea/data
+DISABLE_SSH = true
+
+[database]
+DB_TYPE = sqlite3
+PATH = $DATA/gitea/data/gitea.db
+
+[repository]
+ROOT = $DATA/repositories
+
+[git]
+HOME_PATH = $DATA/home
+
+[git.config]
+core.hooksPath = $DATA/hooks
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY = $SECRET_KEY
+INTERNAL_TOKEN = $INTERNAL_TOKEN
+
+[service]
+DISABLE_REGISTRATION = true
+
+[indexer]
+ISSUE_INDEXER_TYPE = db
+
+[log]
+MODE = console
+ROOT_PATH = $DATA/gitea/log
+`
+
+func writeNibrunConfig(configPath, dataDir string) error {
+	if _, err := os.Stat(configPath); err == nil {
 		return nil
 	}
 	secret, err := generate.NewSecretKey()
 	if err != nil {
-		return fmt.Errorf("generate secret key: %w", err)
+		return err
 	}
 	token, err := generate.NewInternalToken()
 	if err != nil {
-		return fmt.Errorf("generate internal token: %w", err)
+		return err
 	}
-	body := renderNibrunConfig(nibrunConfigValues{
-		Domain:        nibrunHostname(),
-		RootURL:       nibrunRootURL(),
-		Port:          nibrunPort(),
-		DataDir:       l.dataDir,
-		WorkDir:       l.workDir(),
-		AppDataPath:   l.appDataPath(),
-		Repositories:  l.repositories(),
-		GitHome:       l.gitHome(),
-		HooksDir:      l.hooksDir(),
-		LogDir:        l.logDir(),
-		SecretKey:     secret,
-		InternalToken: token,
-	})
-	if err := os.WriteFile(l.configPath(), []byte(body), 0o600); err != nil {
-		return fmt.Errorf("write file: %w", err)
+	// nibrun terminates TLS at its edge and forwards plain HTTP, so the public URL
+	// uses a scheme the server itself never speaks.
+	rootURL := "http://localhost:" + nibrunPort() + "/"
+	if os.Getenv("NIBRUN_HOSTNAME") != "" {
+		rootURL = "https://" + nibrunHostname() + "/"
 	}
-	return nil
+	body := strings.NewReplacer(
+		"$DATA", dataDir,
+		"$DOMAIN", nibrunHostname(),
+		"$ROOT_URL", rootURL,
+		"$PORT", nibrunPort(),
+		"$SECRET_KEY", secret,
+		"$INTERNAL_TOKEN", token,
+	).Replace(nibrunConfigTemplate)
+	return os.WriteFile(configPath, []byte(body), 0o600)
 }
 
-func (l *nibrunLayout) exportEnvironment() error {
-	for name, value := range map[string]string{
-		"PATH": l.binDir() + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"HOME": l.gitHome(),
-
-		// The bundled git is built with the Makefile's default prefix of $HOME, so
-		// its compiled-in system paths point at the build user's home directory and
-		// every invocation warns about a directory the run user cannot read.
-		"GIT_ATTR_NOSYSTEM": "1",
-
-		// The hooks re-enter this binary with no arguments beyond the hook name, so
-		// they find the configuration the same way the server did.
-		"GITEA_WORK_DIR": l.workDir(),
-		"GITEA_CUSTOM":   l.customDir(),
-	} {
-		if err := os.Setenv(name, value); err != nil {
-			return fmt.Errorf("set %q: %w", name, err)
-		}
+func nibrunHostname() string {
+	if host := os.Getenv("NIBRUN_HOSTNAME"); host != "" {
+		return host
 	}
-	return nil
+	return "localhost"
+}
+
+func nibrunPort() string {
+	if port := os.Getenv("NIBRUN_HTTP_PORT"); port != "" {
+		return port
+	}
+	return "3000"
 }
 
 // The first user has to come from the command line: the install page is locked
 // and self-registration is disabled. Both steps run as child processes so that
 // serving starts from a single clean initialization.
-func (l *nibrunLayout) ensureAdmin() error {
-	if _, err := os.Stat(l.adminMarker()); err == nil {
+func ensureNibrunAdmin(marker, configPath string) error {
+	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
-	executable, err := os.Executable()
+	self, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
+		return err
 	}
-	password, err := randomNibrunHex(9)
-	if err != nil {
-		return fmt.Errorf("generate password: %w", err)
+	run := func(args ...string) error {
+		command := exec.Command(self, append(args, "--config", configPath)...)
+		command.Stdout, command.Stderr = os.Stdout, os.Stderr
+		return command.Run()
 	}
-
 	// "admin user create" opens the database without migrating it, so on a first
 	// boot the tables it writes to do not exist yet.
-	if err := l.run(executable, "migrate"); err != nil {
+	if err := run("migrate"); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
-	if err := l.run(executable, "admin", "user", "create",
+	if err := run("admin", "user", "create",
 		"--username", nibrunAdminUser,
-		"--password", password,
 		"--email", nibrunAdminUser+"@"+nibrunHostname(),
-		"--admin",
-		"--must-change-password=false",
+		"--admin", "--random-password", "--must-change-password=false",
 	); err != nil {
-		return fmt.Errorf("create user: %w", err)
+		return fmt.Errorf("create administrator: %w", err)
 	}
-
-	if err := os.WriteFile(l.adminMarker(), []byte(nibrunAdminUser), 0o644); err != nil {
-		return fmt.Errorf("record marker: %w", err)
-	}
-	// Printed rather than logged because the log manager is only configured once
-	// serving starts, and these credentials are the only way into a new instance.
-	_, _ = fmt.Fprintf(os.Stdout, "Administrator %q created with initial password %q\n", nibrunAdminUser, password)
-	return nil
-}
-
-func (l *nibrunLayout) run(executable string, args ...string) error {
-	command := exec.Command(executable, append(args, "--config", l.configPath())...)
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	return command.Run()
-}
-
-func writeNibrunExecutable(path string, source io.Reader) error {
-	staging := path + ".staging"
-	file, err := os.Create(staging)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
-	}
-	if _, err := io.Copy(file, source); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("copy contents: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close file: %w", err)
-	}
-	if err := os.Chmod(staging, 0o755); err != nil {
-		return fmt.Errorf("set mode: %w", err)
-	}
-	if err := os.Rename(staging, path); err != nil {
-		return fmt.Errorf("move into place: %w", err)
-	}
-	return nil
-}
-
-func nibrunDataDir() string {
-	if dir := os.Getenv("NIBRUN_DATA_DIR"); dir != "" {
-		return dir
-	}
-	return "data"
-}
-
-func randomNibrunHex(size int) (string, error) {
-	buffer := make([]byte, size)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return hex.EncodeToString(buffer), nil
+	return os.WriteFile(marker, nil, 0o644)
 }
 
 // NibrunHookArgs rewrites the arguments of a binary invoked through one of the
@@ -288,10 +265,8 @@ func NibrunHookArgs(args []string) []string {
 		return args
 	}
 	name := filepath.Base(args[0])
-	for _, hook := range nibrunHooks {
-		if name == hook {
-			return append([]string{args[0], "hook", hook}, args[1:]...)
-		}
+	if !slices.Contains(nibrunHooks, name) {
+		return args
 	}
-	return args
+	return append([]string{args[0], "hook", name}, args[1:]...)
 }

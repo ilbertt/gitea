@@ -36,7 +36,7 @@ writable volume and no shell, package manager or `git`. This fork adds a `nibrun
 subcommand that carries a statically linked git and its own server-side hooks
 inside the binary, so a release asset is the whole deployment.
 
-[![Deploy on nibrun](https://img.shields.io/badge/Deploy%20on-nibrun-000000?style=for-the-badge)](https://app.nibrun.com/deploy?name=gitea&binary=https%3A%2F%2Fgithub.com%2Filbertt%2Fgitea%2Freleases%2Fdownload%2Fv1.28.0-dev-nibrun.1%2Fgitea-nibrun-linux-amd64&sha256=2e7f43c0d739c01638001a532e597071291aac2d3ea032d637f666cbae17a49d&port=3000&arg=%5B%22nibrun%22%5D&minimal=true)
+[![Deploy on nibrun](https://img.shields.io/badge/Deploy%20on-nibrun-000000?style=for-the-badge)](https://app.nibrun.com/deploy?name=gitea&binary=https%3A%2F%2Fgithub.com%2Filbertt%2Fgitea%2Freleases%2Fdownload%2Fv1.28.0-dev-nibrun.2%2Fgitea-nibrun-linux-amd64&sha256=e74bef3081a046c6a3964dee49ca68b94316a69f0709a148ee6234c543a93bb5&port=3000&arg=%5B%22nibrun%22%5D&minimal=true)
 
 See [nibrun/README.md](nibrun/README.md) for how it is built and what it assumes.
 

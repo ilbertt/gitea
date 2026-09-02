@@ -27,9 +27,12 @@ gitea-nibrun-linux-amd64 nibrun
 
 The subcommand reads `NIBRUN_DATA_DIR`, `NIBRUN_HTTP_PORT` and
 `NIBRUN_HOSTNAME` from the environment the host provides, lays the volume out
-under the first of them, and writes an `app.ini` addressing it. It creates an
-administrator on first boot and prints the generated password to stdout, which
-is the only time that password is recoverable.
+under the first of them, and writes an `app.ini` addressing it.
+
+On first boot it creates an administrator named `gitea-admin` and prints the
+generated password to stdout, which is the only time that password is
+recoverable. The install page is locked and registration is disabled, so the
+instance is usable as soon as it answers, with nobody able to claim it first.
 
 ## How the hooks work
 
