@@ -37,7 +37,7 @@ carries a static git and its own hooks inside the binary, so the release asset i
 the whole deployment. It comes up signed in as `gitea-admin`, with the generated
 password printed to the log on first boot.
 
-[![Deploy on nibrun](https://img.shields.io/badge/Deploy%20on-nibrun-000000?style=for-the-badge)](https://app.nibrun.com/deploy?name=gitea&binary=https%3A%2F%2Fgithub.com%2Filbertt%2Fgitea%2Freleases%2Fdownload%2Fv1.28.0-dev-nibrun.2%2Fgitea-nibrun-linux-amd64&sha256=e74bef3081a046c6a3964dee49ca68b94316a69f0709a148ee6234c543a93bb5&port=3000&arg=%5B%22nibrun%22%5D&minimal=true)
+[![Deploy on nibrun](https://img.shields.io/badge/Deploy%20on-nibrun-000000?style=for-the-badge)](https://app.nibrun.com/deploy?name=gitea&binary=https%3A%2F%2Fgithub.com%2Filbertt%2Fgitea%2Freleases%2Fdownload%2Fv1.28.0-dev-nibrun.3%2Fgitea-nibrun-linux-amd64&sha256=f7a3b71523a60be16772b82240a74e4fead1a5e7162008d6e5cf85cdd97ceff6&port=3000&arg=%5B%22nibrun%22%5D&minimal=true)
 
 ## Documentation
 
